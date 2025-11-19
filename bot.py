@@ -1,61 +1,143 @@
 import os
-import subprocess
-import telebot
-from telebot import types
+from aiogram import Bot, Dispatcher, executor, types
+import yt_dlp
+import asyncio
 
-TOKEN = os.getenv("TOKEN")
-bot = telebot.TeleBot(TOKEN)
+TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
 
-# Стартовое сообщение
-@bot.message_handler(commands=['start'])
-def start(msg):
-    bot.reply_to(msg, "Скинь ссылку на видео — и выбери формат 🔥")
+DOWNLOAD_DIR = "/tmp"
 
-# Когда пользователь присылает ссылку
-@bot.message_handler(func=lambda m: m.text.startswith("http"))
-def choose_format(msg):
-    url = msg.text.strip()
 
-    # Кнопки выбора формата
-    kb = types.InlineKeyboardMarkup()
-    btn1 = types.InlineKeyboardButton("🎬 MP4 (видео)", callback_data=f"mp4|{url}")
-    btn2 = types.InlineKeyboardButton("🎧 MP3 (аудио)", callback_data=f"mp3|{url}")
-    kb.add(btn1)
-    kb.add(btn2)
+# === функции скачивания ===
+def download_video(url, quality):
+    """
+    quality:
+      - best     (максимум)
+      - 1080p
+      - 480p
+      - 360p
+    """
 
-    bot.reply_to(msg, "Выбери формат скачивания:", reply_markup=kb)
+    format_map = {
+        "best": "best",
+        "1080p": "bestvideo[height=1080]+bestaudio/best",
+        "480p": "bestvideo[height=480]+bestaudio/best",
+        "360p": "bestvideo[height=360]+bestaudio/best",
+    }
 
-# Обработка нажатий кнопок
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    format_type, url = call.data.split("|")
+    ydl_opts = {
+        "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+        "merge_output_format": "mp4",
+        "format": format_map.get(quality, "best"),
+        "noplaylist": True,
+        "quiet": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["default"]
+            }
+        },
+    }
 
-    bot.edit_message_text(
-        "Скачиваю… подожди 🔥",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
+
+
+def download_audio(url):
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.mp3",
+        "quiet": True,
+        "noplaylist": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["default"]
+            }
+        },
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return ydl.prepare_filename(info)
+
+
+# === команды ===
+@dp.message_handler(commands=["start"])
+async def start_cmd(message: types.Message):
+    await message.answer(
+        "Скидывай ссылку на YouTube 🎥\n"
+        "Я подготовлю варианты скачивания 🔥"
     )
 
-    if format_type == "mp4":
-        output = "video.mp4"
-        cmd = ["yt-dlp", "-f", "best", "-o", output, url]
 
-        subprocess.run(cmd)
-        with open(output, "rb") as f:
-            bot.send_video(call.message.chat.id, f)
+# === обработка ссылок ===
+@dp.message_handler()
+async def get_url(message: types.Message):
+    url = message.text.strip()
 
-    elif format_type == "mp3":
-        output = "audio.mp3"
-        cmd = [
-            "yt-dlp",
-            "-x",
-            "--audio-format", "mp3",
-            "-o", output,
-            url
-        ]
+    if "youtu" not in url:
+        await message.answer("Это не похоже на YouTube ссылку 🙂")
+        return
 
-        subprocess.run(cmd)
-        with open(output, "rb") as f:
-            bot.send_audio(call.message.chat.id, f)
+    # Кнопки выбора качества
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("🎥 MP4 1080p", callback_data=f"v1080|{url}"),
+        types.InlineKeyboardButton("🎥 MP4 480p",  callback_data=f"v480|{url}"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("🎥 MP4 360p",  callback_data=f"v360|{url}"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("🎧 MP3",       callback_data=f"mp3|{url}")
+    )
 
-bot.polling(none_stop=True)
+    await message.answer("Выбери формат 👇", reply_markup=kb)
+
+
+# === обработка кнопок ===
+@dp.callback_query_handler()
+async def process_callback(call: types.CallbackQuery):
+    action, url = call.data.split("|")
+
+    await call.message.edit_text("Скачиваю… подожди пару секунд ⏳")
+
+    try:
+        if action == "mp3":
+            path = download_audio(url)
+            await call.message.answer_audio(open(path, "rb"))
+            os.remove(path)
+
+        elif action == "v1080":
+            path = download_video(url, "1080p")
+            await call.message.answer_video(open(path, "rb"))
+            os.remove(path)
+
+        elif action == "v480":
+            path = download_video(url, "480p")
+            await call.message.answer_video(open(path, "rb"))
+            os.remove(path)
+
+        elif action == "v360":
+            path = download_video(url, "360p")
+            await call.message.answer_video(open(path, "rb"))
+            os.remove(path)
+
+        else:
+            await call.message.answer("Неизвестный формат 🤔")
+
+    except Exception as e:
+        await call.message.answer(f"Ошибка: {e}")
+
+
+if name == "__main__":
+    executor.start_polling(dp, skip_updates=True)
