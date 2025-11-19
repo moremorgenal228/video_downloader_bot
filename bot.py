@@ -1,5 +1,5 @@
 import os
-import subprocess
+import time
 import telebot
 from telebot import types
 from yt_dlp import YoutubeDL
@@ -7,16 +7,12 @@ from yt_dlp import YoutubeDL
 TOKEN = os.getenv("TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-
-# -------------------------------
-# Настройки для yt-dlp (рабочие)
-# -------------------------------
 YDL_OPTS_VIDEO = {
     "format": "best",
     "outtmpl": "%(title)s.%(ext)s",
     "extractor_args": {
         "youtube": {
-            "player_client": ["android"]
+            "player_client": ["android", "android_music", "web_safari"]
         }
     }
 }
@@ -33,101 +29,70 @@ YDL_OPTS_AUDIO = {
     }],
     "extractor_args": {
         "youtube": {
-            "player_client": ["android"]
+            "player_client": ["android", "android_music", "web_safari"]
         }
     }
 }
 
-
-
-# ---------------------------------
-# /start
-# ---------------------------------
 @bot.message_handler(commands=['start'])
 def start(msg):
-    bot.reply_to(msg, "Скинь ссылку на видео — и выбери формат 🔥")
+    bot.reply_to(msg, "Кидай ссылку на видео 🔥")
 
-
-
-# ---------------------------------
-# Пользователь присылает ссылку
-# ---------------------------------
 @bot.message_handler(func=lambda m: m.text.startswith("http"))
 def choose_format(msg):
     url = msg.text.strip()
-
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("🎬 MP4 (видео)", callback_data=f"mp4|{url}"),
-        types.InlineKeyboardButton("🎧 MP3 (аудио)", callback_data=f"mp3|{url}")
+        types.InlineKeyboardButton("🎬 Видео (MP4)", callback_data=f"mp4|{url}"),
+        types.InlineKeyboardButton("🎧 Аудио (MP3)", callback_data=f"mp3|{url}")
     )
+    bot.reply_to(msg, "Выбери формат:", reply_markup=kb)
 
-    bot.reply_to(msg, "Выбери формат скачивания:", reply_markup=kb)
-
-
-
-# ---------------------------------
-# Загрузка видео
-# ---------------------------------
 def download_video(url):
     try:
         with YoutubeDL(YDL_OPTS_VIDEO) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            return filename
-    except Exception as e:
+            return ydl.prepare_filename(info)
+    except:
         return None
 
-
-
-# ---------------------------------
-# Загрузка аудио
-# ---------------------------------
 def download_audio(url):
     try:
         with YoutubeDL(YDL_OPTS_AUDIO) as ydl:
             info = ydl.extract_info(url, download=True)
             base = ydl.prepare_filename(info)
             mp3 = base.rsplit(".", 1)[0] + ".mp3"
+
+            # Ждём, пока файл реально появится
+            for _ in range(10):
+                if os.path.exists(mp3):
+                    break
+                time.sleep(1)
+
             return mp3
-    except Exception as e:
+    except:
         return None
 
-
-
-# ---------------------------------
-# Обработка кнопок
-# ---------------------------------
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-    format_type, url = call.data.split("|")
+    ftype, url = call.data.split("|")
 
-    bot.edit_message_text(
-        "Скачиваю… подожди 🔥",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id
-    )
+    bot.edit_message_text("Скачиваю… 🔥", call.message.chat.id, call.message.message_id)
 
-    if format_type == "mp4":
-        filepath = download_video(url)
-        if filepath and os.path.exists(filepath):
-            with open(filepath, "rb") as f:
+    if ftype == "mp4":
+        path = download_video(url)
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
                 bot.send_video(call.message.chat.id, f)
         else:
             bot.send_message(call.message.chat.id, "⚠️ Не удалось скачать видео.")
 
-    elif format_type == "mp3":
-        filepath = download_audio(url)
-        if filepath and os.path.exists(filepath):
-            with open(filepath, "rb") as f:
+    elif ftype == "mp3":
+        path = download_audio(url)
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
                 bot.send_audio(call.message.chat.id, f)
         else:
             bot.send_message(call.message.chat.id, "⚠️ Не удалось скачать аудио.")
 
-
-
-
-# ---------------------------------
-# Запуск бота
-# ---------------------------------
 bot.polling(none_stop=True)
